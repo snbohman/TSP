@@ -1,5 +1,6 @@
 package main
 
+import "core:math"
 import "core:fmt"
 import "core:os"
 import "core:slice"
@@ -7,8 +8,7 @@ import "core:strconv"
 import "core:strings"
 import rl "vendor:raylib"
 
-// (n-1)! orderings get checked, so 11 points is still interactive
-maxBrute :: 12
+maxBrute :: 15
 pointRadius :: 5
 loadPoints :: 10
 
@@ -87,6 +87,11 @@ bruteForce :: proc(dist: []f32, perm: []int, depth: int, length: f32, best: ^Tou
 		perm[depth], perm[i] = perm[i], perm[depth]       // swap slots d. & i
 
 		step := dist[perm[depth - 1] * n + perm[depth]]
+
+        // cut branch if its already exceeding best path
+        if length + step > best.length { break }
+
+        // recursive into next tree depth
 		bruteForce(dist, perm, depth + 1, length + step, best, iterations)
 
         perm[depth], perm[i] = perm[i], perm[depth] // undo the swap
@@ -191,7 +196,13 @@ draw :: proc(s: ^State) {
         msg := fmt.ctprintf("points [%d] > max [%d]", len(s.points), maxBrute)
 		rl.DrawText(msg, 10, 10, 18, rl.RED)
 	} else {
-        msg := fmt.ctprintf("%d# : [%.1fm, %.2fms]", len(s.points), s.best.length, s.solveMs)
+        msg := fmt.ctprintf(
+            "%d# : %.1fm  %.2fms  %.5f [log]",
+            len(s.points),
+            s.best.length,
+            s.solveMs,
+            math.log10_f32(f32(s.iterations) / f32(math.factorial(n)))
+        )
 		rl.DrawText(msg, 10, 10, 18, rl.DARKGRAY)
 	}
 }
