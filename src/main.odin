@@ -8,8 +8,9 @@ import "core:strings"
 import rl "vendor:raylib"
 
 // (n-1)! orderings get checked, so 11 points is still interactive
-maxBrute :: 11
-pointRadius :: 10
+maxBrute :: 12
+pointRadius :: 5
+loadPoints :: 10
 
 Tour :: struct {
 	order:  [dynamic]int, // city indices in visiting order
@@ -22,10 +23,11 @@ State :: struct {
 	dragIdx: int, // -1 when nothing is being dragged
 	dirty:   bool, // points changed, tour needs recomputing
 	solveMs: f64,
+    iterations: int,
 }
 
 // Each line is "x,y". Lines that fail to parse (e.g. a header) are skipped.
-loadCsv :: proc(path: string) -> (pts: [dynamic]rl.Vector2) {
+loadCsv :: proc(path: string, maxPoints: int) -> (pts: [dynamic]rl.Vector2) {
 	cPath := strings.clone_to_cstring(path, context.temp_allocator)
 	raw := rl.LoadFileText(cPath)
 	if raw == nil { return }
@@ -33,6 +35,8 @@ loadCsv :: proc(path: string) -> (pts: [dynamic]rl.Vector2) {
 
 	text := string(cstring(raw))
 	for line in strings.split_lines_iterator(&text) {
+        if len(pts) >= maxPoints { break }
+
 		cols := strings.split(line, ",", context.temp_allocator)
 		if len(cols) < 2 {
 			continue
@@ -41,85 +45,52 @@ loadCsv :: proc(path: string) -> (pts: [dynamic]rl.Vector2) {
 		x, okX := strconv.parse_f32(strings.trim_space(cols[0]))
 		y, okY := strconv.parse_f32(strings.trim_space(cols[1]))
 		if okX && okY {
-			append(&pts, rl.Vector2{x, y})
+			append(&pts, 20 + 7*rl.Vector2{x, y})
 		}
 	}
 
 	return
 }
 
-// Rearranges a into the next lexicographic permutation.
-// Returns false once the last permutation has been passed.
-nextPermutation :: proc(a: []int) -> bool {
-	// find the rightmost position that can still be increased
-	i := len(a) - 2
-	for i >= 0 && a[i] >= a[i + 1] {
-		i -= 1
-	} if i < 0 {
-		return false
-	}
+precomputeDist :: proc(pts: []rl.Vector2) -> []f32 {
+    n := len(pts)
+    dist := make([]f32, n * n)
 
-	// swap it with the smallest larger value to its right
-	j := len(a) - 1
-	for a[j] <= a[i] {
-		j -= 1
-	}
-	a[i], a[j] = a[j], a[i]
+    for i in 0 ..< n {
+        for j in 0 ..< n {
+            dist[i * n + j] = rl.Vector2Distance(pts[i], pts[j])
+        }
+    }
 
-	// the tail is now descending, reverse it to get the smallest tail
-	slice.reverse(a[i + 1:])
-	return true
+    return dist
 }
 
-bruteForce :: proc(pts: []rl.Vector2) -> Tour {
-	n := len(pts)
-	best := Tour {
-		order  = make([dynamic]int, n),
-		length = max(f32),
-	}
+// Recursively tries every ordering of perm[depth:]. perm[0] stays fixed as the start.
+// length is the distance of the path built so far (perm[0..depth-1]).
+bruteForce :: proc(dist: []f32, perm: []int, depth: int, length: f32, best: ^Tour, iterations: ^int) {
+	n := len(perm)
 
-	// precompute all pairwise distances once
-	dist := make([]f32, n * n)
-	defer delete(dist)
-	for i in 0 ..< n {
-		for j in 0 ..< n {
-			dist[i * n + j] = rl.Vector2Distance(pts[i], pts[j])
-		}
-	}
+	// all cities placed: close the loop back to the start and compare
+	if depth == n {
+		iterations^ += 1
 
-	// start with the identity ordering 0,1,2,...
-	perm := make([]int, n)
-	defer delete(perm)
-	for i in 0 ..< n {
-		perm[i] = i
-	}
-
-	// trivial cases have nothing to permute
-	if n < 3 {
-		copy(best.order[:], perm)
-		best.length = n == 2 ? 2 * dist[1] : 0
-		return best
-	}
-
-	// City 0 stays first, only the rest is permuted.
-	// A tour is a cycle, so fixing the start loses nothing.
-	for {
-		// closing edge back to the start, then every edge along the path
-		total := dist[perm[n - 1] * n + perm[0]]
-		for i in 0 ..< n - 1 {
-			total += dist[perm[i] * n + perm[i + 1]]
-		}
-
+		total := length + dist[perm[n - 1] * n + perm[0]]
 		if total < best.length {
 			best.length = total
 			copy(best.order[:], perm)
 		}
-
-		if !nextPermutation(perm[1:]) {
-			break
-		}
+		return
 	}
-	return best
+
+	// try each remaining city at this position by swapping it in
+	for i in depth ..< n {
+		perm[depth], perm[i] = perm[i], perm[depth]       // swap slots d. & i
+
+		step := dist[perm[depth - 1] * n + perm[depth]]
+		bruteForce(dist, perm, depth + 1, length + step, best, iterations)
+
+        perm[depth], perm[i] = perm[i], perm[depth] // undo the swap
+	}
 }
 
 // Index of the point under the mouse, or -1
@@ -130,6 +101,27 @@ pickPoint :: proc(pts: []rl.Vector2, mouse: rl.Vector2) -> int {
 		}
 	}
 	return -1
+}
+
+// Sets up the buffers bruteForce expects. Requires len(pts) >= 1.
+solve :: proc(pts: []rl.Vector2) -> (best: Tour, iterations: int) {
+	n := len(pts)
+	best = Tour {
+		order  = make([dynamic]int, n), // copy() needs the slots to exist
+		length = max(f32), // so the first tour always wins
+	}
+
+	dist := precomputeDist(pts)
+	defer delete(dist)
+
+	perm := make([]int, n)
+	defer delete(perm)
+	for i in 0 ..< n {
+		perm[i] = i
+	}
+
+	bruteForce(dist, perm, 1, 0, &best, &iterations)
+	return
 }
 
 update :: proc(s: ^State) {
@@ -164,15 +156,16 @@ update :: proc(s: ^State) {
 
 	// re-solve only when something changed
 	if s.dirty {
+        defer s.dirty = false;
 		delete(s.best.order)
-		s.best = {}
+		s.best, s.iterations = {}, 0
 
-		if len(s.points) <= maxBrute {
+        n := len(s.points)
+		if n >= 1 && len(s.points) <= maxBrute {
 			start := rl.GetTime()
-			s.best = bruteForce(s.points[:])
+            s.best, s.iterations = solve(s.points[:])
 			s.solveMs = (rl.GetTime() - start) * 1000
 		}
-		s.dirty = false
 	}
 }
 
@@ -186,24 +179,20 @@ draw :: proc(s: ^State) {
 	for i in 0 ..< n {
 		a := s.points[s.best.order[i]]
 		b := s.points[s.best.order[(i + 1) % n]]
-		rl.DrawLineEx(a, b, 2, rl.SKYBLUE)
+		rl.DrawLineEx(a, b, 2, rl.GRAY)
 	}
 
 	// points, the start city is red
 	for p, i in s.points {
-		color := i == 0 ? rl.RED : rl.DARKBLUE
-		rl.DrawCircleV(p, pointRadius, color)
-		rl.DrawText(fmt.ctprintf("%d", i), i32(p.x) + 12, i32(p.y) - 20, 16, rl.DARKGRAY)
+		rl.DrawCircleV(p, pointRadius, rl.BLACK)
 	}
 
-	rl.DrawText("LMB: add / drag    RMB: remove", 10, 10, 18, rl.DARKGRAY)
-
 	if len(s.points) > maxBrute {
-		msg := fmt.ctprintf("%d points: too many for brute force (max %d)", len(s.points), maxBrute)
-		rl.DrawText(msg, 10, 34, 18, rl.RED)
+        msg := fmt.ctprintf("points [%d] > max [%d]", len(s.points), maxBrute)
+		rl.DrawText(msg, 10, 10, 18, rl.RED)
 	} else {
-		msg := fmt.ctprintf("n=%d  length=%.1f  solved in %.2f ms", len(s.points), s.best.length, s.solveMs)
-		rl.DrawText(msg, 10, 34, 18, rl.DARKGRAY)
+        msg := fmt.ctprintf("%d# : [%.1fm, %.2fms]", len(s.points), s.best.length, s.solveMs)
+		rl.DrawText(msg, 10, 10, 18, rl.DARKGRAY)
 	}
 }
 
@@ -214,7 +203,7 @@ main :: proc() {
 	}
 
 	if len(os.args) > 1 {
-		s.points = loadCsv(os.args[1])
+		s.points = loadCsv(os.args[1], loadPoints)
 	}
 
 	rl.SetConfigFlags({.MSAA_4X_HINT})
