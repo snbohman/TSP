@@ -3,12 +3,11 @@ package main
 import "core:math"
 import "core:fmt"
 import "core:os"
-import "core:slice"
 import "core:strconv"
 import "core:strings"
 import rl "vendor:raylib"
 
-maxBrute :: 15
+maxBrute :: 12
 pointRadius :: 5
 loadPoints :: 10
 
@@ -89,7 +88,10 @@ bruteForce :: proc(dist: []f32, perm: []int, depth: int, length: f32, best: ^Tou
 		step := dist[perm[depth - 1] * n + perm[depth]]
 
         // cut branch if its already exceeding best path
-        if length + step > best.length { break }
+        if length + step > best.length {
+            perm[depth], perm[i] = perm[i], perm[depth] // undo the swap
+            continue
+        }
 
         // recursive into next tree depth
 		bruteForce(dist, perm, depth + 1, length + step, best, iterations)
@@ -197,7 +199,7 @@ draw :: proc(s: ^State) {
 		rl.DrawText(msg, 10, 10, 18, rl.RED)
 	} else {
         msg := fmt.ctprintf(
-            "%d# : %.1fm  %.2fms  %.5f [log]",
+            "%d# : %.1fm  %.2fms  %.2f [log]",
             len(s.points),
             s.best.length,
             s.solveMs,
